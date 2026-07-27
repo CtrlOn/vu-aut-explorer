@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VU Authors Explorer</title>
+    
+    <!-- Google Fonts: Inter & Outfit -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;600;700;800&display=swap" rel="stylesheet">
+    
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Graphology & Sigma.js CDNs -->
+    <script src="https://cdn.jsdelivr.net/npm/graphology@0.25.4/dist/graphology.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/graphology-library@0.8.0/dist/graphology-library.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/sigma.js/2.4.0/sigma.min.js"></script>
+    
+    <!-- Local Stylesheet -->
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar Navigation / Control Panel -->
+        <aside class="sidebar glass-panel">
+            <div class="brand">
+                <i class="fa-solid fa-network-wired logo-icon"></i>
+                <div class="brand-text">
+                    <h1>VU Authors</h1>
+                    <span>Explorer</span>
+                </div>
+            </div>
+            
+            <p class="subtitle">Discover academic co-authorship networks across Vilnius University.</p>
+            
+            <!-- Search Section -->
+            <div class="control-section">
+                <h3><i class="fa-solid fa-magnifying-glass"></i> Add Author</h3>
+                <div class="search-box">
+                    <input type="text" id="authorSearchInput" placeholder="Firstname Lastname (e.g. Andrius Juodagalvis)" autocomplete="off">
+                    <button id="addAuthorBtn" title="Search and add author">
+                        <i class="fa-solid fa-plus"></i>
+                    </button>
+                </div>
+                <div id="statusMessage" class="status-message"></div>
+            </div>
+
+            <!-- Stats & Settings -->
+            <div class="control-section">
+                <h3><i class="fa-solid fa-chart-simple"></i> Network Stats</h3>
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <span id="nodeCount" class="stat-val">0</span>
+                        <span class="stat-lbl">Authors</span>
+                    </div>
+                    <div class="stat-card">
+                        <span id="edgeCount" class="stat-val">0</span>
+                        <span class="stat-lbl">Links</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Active / Explored Authors List -->
+            <div class="control-section flex-grow">
+                <h3><i class="fa-solid fa-users"></i> Explored Authors</h3>
+                <ul id="exploredList" class="explored-list">
+                    <li class="empty-list-msg">No authors explored yet. Use the search bar above to get started.</li>
+                </ul>
+            </div>
+
+            <!-- Footer info -->
+            <div class="sidebar-footer">
+                <a href="https://elaba.mb.vu.lt/fsf/" target="_blank" class="elaba-link">
+                    <i class="fa-solid fa-building-columns"></i> Powered by eLABa
+                </a>
+            </div>
+        </aside>
+
+        <!-- Main Visualization Container -->
+        <main class="main-content">
+            <div id="sigmaContainer" class="sigma-container">
+                <!-- Welcome Overlay -->
+                <div id="welcomeOverlay" class="welcome-overlay">
+                    <div class="welcome-content glass-panel">
+                        <h2><i class="fa-solid fa-circle-nodes welcome-icon"></i> Welcome to VU Authors Explorer</h2>
+                        <p>To begin mapping the academic landscape of Vilnius University:</p>
+                        <ol>
+                            <li>Type an author's name in the sidebar (e.g., <strong>Andrius Juodagalvis</strong>).</li>
+                            <li>Press <strong>Enter</strong> or click the <strong>+</strong> button to spawn their node.</li>
+                            <li><strong>Click on a node</strong> to explore their entire publication history and load all of their verified eLABa co-authors onto the graph.</li>
+                        </ol>
+                        <div class="quick-start-buttons">
+                            <button class="btn-primary" onclick="quickStart('Andrius Juodagalvis')">
+                                Quick Start: Andrius Juodagalvis
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Loader Spinner overlay -->
+                <div id="loaderOverlay" class="loader-overlay hidden">
+                    <div class="loader-spinner"></div>
+                    <div id="loaderText" class="loader-text">Fetching author publications...</div>
+                </div>
+
+                <!-- Floating Sigma Navigation Controls -->
+                <div class="graph-controls">
+                    <button id="zoomInBtn" title="Zoom In"><i class="fa-solid fa-plus"></i></button>
+                    <button id="zoomOutBtn" title="Zoom Out"><i class="fa-solid fa-minus"></i></button>
+                    <button id="resetZoomBtn" title="Reset View"><i class="fa-solid fa-expand"></i></button>
+                    <button id="physicsBtn" class="active" title="Toggle Layout Simulation"><i class="fa-solid fa-play"></i></button>
+                </div>
+                
+                <!-- Simple tooltip for hovered nodes -->
+                <div id="nodeTooltip" class="node-tooltip hidden"></div>
+
+                <!-- Floating Hidden Debug Button (Faint in bottom-left) -->
+                <button id="debugToggleBtn" class="debug-toggle-btn" title="Toggle Force Physics Debugger">
+                    <i class="fa-solid fa-bug"></i>
+                </button>
+
+                <!-- Floating Debug Controls Panel -->
+                <div id="debugPanel" class="debug-panel glass-panel hidden">
+                    <div class="debug-panel-header">
+                        <h4><i class="fa-solid fa-gauge-high"></i> Physics Debugger</h4>
+                        <button id="closeDebugBtn" class="close-debug-btn"><i class="fa-solid fa-xmark"></i></button>
+                    </div>
+                    <div class="debug-panel-body">
+                        <div class="debug-control">
+                            <label for="gravitySlider">Gravity: <span id="gravityVal">0.010</span></label>
+                            <input type="range" id="gravitySlider" min="0.000" max="0.150" step="0.002" value="0.010">
+                        </div>
+                        <div class="debug-control">
+                            <label for="scalingSlider">Scaling Ratio: <span id="scalingVal">12.0</span></label>
+                            <input type="range" id="scalingSlider" min="1.0" max="40.0" step="0.5" value="12.0">
+                        </div>
+                        <div class="debug-control">
+                            <label for="slowDownSlider">Slowdown (Damping): <span id="slowDownVal">15.0</span></label>
+                            <input type="range" id="slowDownSlider" min="1.0" max="30.0" step="0.5" value="15.0">
+                        </div>
+                        <div class="debug-checkboxes">
+                            <label class="checkbox-container">
+                                <input type="checkbox" id="strongGravityCheckbox">
+                                <span class="checkmark"></span>
+                                Strong Gravity
+                            </label>
+                            <label class="checkbox-container">
+                                <input type="checkbox" id="barnesHutCheckbox">
+                                <span class="checkmark"></span>
+                                Barnes-Hut Optimization
+                            </label>
+                            <label class="checkbox-container">
+                                <input type="checkbox" id="adjustSizesCheckbox">
+                                <span class="checkmark"></span>
+                                Prevent Overlaps
+                            </label>
+                        </div>
+                        <button id="resetDebugBtn" class="btn-secondary">Reset to Stable Defaults</button>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- Right Side Panel: Author Details -->
+        <section id="detailsPanel" class="details-panel glass-panel closed">
+            <button id="closeDetailsBtn" class="close-panel-btn"><i class="fa-solid fa-xmark"></i></button>
+            
+            <div class="details-header">
+                <div class="avatar-circle">
+                    <i class="fa-solid fa-user-tie"></i>
+                </div>
+                <h2 id="detailsAuthorName">Author Name</h2>
+                <div class="details-subtitle">
+                    <a id="detailsElabaLink" href="#" target="_blank" class="external-elaba-link">
+                        View eLABa Page <i class="fa-solid fa-arrow-up-right-from-square"></i>
+                    </a>
+                </div>
+            </div>
+
+            <div class="details-stats">
+                <div class="details-stat-card">
+                    <span id="detailsPubCount" class="details-stat-val">0</span>
+                    <span class="details-stat-lbl">Publications</span>
+                </div>
+                <div class="details-stat-card">
+                    <span id="detailsCoauthorCount" class="details-stat-val">0</span>
+                    <span class="details-stat-lbl">Co-Authors</span>
+                </div>
+            </div>
+
+            <div class="details-body">
+                <h3><i class="fa-solid fa-book"></i> Publications</h3>
+                <div class="search-publications-container">
+                    <input type="text" id="pubSearchInput" placeholder="Filter publications..." autocomplete="off">
+                </div>
+                <div id="publicationsContainer" class="publications-list">
+                    <!-- Loaded dynamically -->
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <!-- Application Script -->
+    <script src="app.js"></script>
+    <script>
+        // Global quickstart helper
+        function quickStart(name) {
+            const input = document.getElementById('authorSearchInput');
+            if (input) {
+                input.value = name;
+                document.getElementById('addAuthorBtn').click();
+            }
+        }
+    </script>
+</body>
+</html>
