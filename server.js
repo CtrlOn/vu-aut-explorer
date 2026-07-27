@@ -12,7 +12,7 @@ const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'docs')));
+app.use(express.static(__dirname));
 
 // Ensure cache directory exists
 const CACHE_DIR = path.join(__dirname, '.cache');
