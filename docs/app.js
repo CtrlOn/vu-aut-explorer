@@ -372,10 +372,18 @@ async function handleSearch() {
     showLoader(true, `Verifying author "${name}"...`);
 
     try {
-        const response = await fetch(`${API_BASE}/api/search?name=${encodeURIComponent(name)}`);
-        const result = await response.json();
+        let exists = false;
+        
+        if (isServerlessMode()) {
+            const html = await clientFetchHtml(name);
+            exists = clientParsePageExists(html);
+        } else {
+            const response = await fetch(`${API_BASE}/api/search?name=${encodeURIComponent(name)}`);
+            const result = await response.json();
+            exists = result.exists;
+        }
 
-        if (result.exists) {
+        if (exists) {
             hideWelcomeOverlay();
             
             // Add to graph if not present
@@ -429,12 +437,41 @@ async function selectAuthor(authorName) {
         let details = state.publicationsCache[authorName];
 
         if (!details) {
-            // Fetch from backend
-            const response = await fetch(`${API_BASE}/api/author?name=${encodeURIComponent(authorName)}`);
-            details = await response.json();
-            
-            if (details.exists) {
-                state.publicationsCache[authorName] = details;
+            if (isServerlessMode()) {
+                // Fetch & parse HTML directly
+                const html = await clientFetchHtml(authorName);
+                details = clientParsePublicationsAndCoauthors(html, authorName);
+                
+                if (details.exists) {
+                    showLoader(true, `Verifying ${details.coauthors.length} co-authors...`);
+                    
+                    // Verify coauthors in parallel with a concurrency limit of 5
+                    const verificationTasks = details.coauthors.map(coauthor => async () => {
+                        try {
+                            const coauthorHtml = await clientFetchHtml(coauthor);
+                            const exists = clientParsePageExists(coauthorHtml);
+                            return { name: coauthor, exists };
+                        } catch (err) {
+                            console.error(`Failed verifying co-author ${coauthor}:`, err);
+                            return { name: coauthor, exists: false };
+                        }
+                    });
+
+                    const verifications = await clientLimitConcurrency(verificationTasks, 5);
+                    details.coauthors = verifications
+                        .filter(v => v.exists)
+                        .map(v => v.name);
+                    
+                    state.publicationsCache[authorName] = details;
+                }
+            } else {
+                // Fetch from backend
+                const response = await fetch(`${API_BASE}/api/author?name=${encodeURIComponent(authorName)}`);
+                details = await response.json();
+                
+                if (details.exists) {
+                    state.publicationsCache[authorName] = details;
+                }
             }
         }
 
@@ -747,3 +784,118 @@ function hideWelcomeOverlay() {
         welcome.classList.add('hidden');
     }
 }
+
+// ============================================================================
+// SERVERLESS FALLBACK ENGINE (For zero-config deployment on GitHub Pages)
+// ============================================================================
+
+function isServerlessMode() {
+    // True if API_BASE is blank and we are running outside localhost/127.0.0.1
+    const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+    return !API_BASE && !isLocal;
+}
+
+function clientNormalizeName(name) {
+    if (!name) return '';
+    const parts = name.split(',');
+    if (parts.length === 2) {
+        return `${parts[1].trim()} ${parts[0].trim()}`;
+    }
+    return name.trim();
+}
+
+function clientParsePageExists(html) {
+    if (!html) return false;
+    return html.toLowerCase().includes('<table') && html.toLowerCase().includes('<tr>');
+}
+
+function clientParsePublicationsAndCoauthors(html, currentAuthorName) {
+    const result = {
+        exists: false,
+        coauthors: [],
+        publications: []
+    };
+
+    if (!clientParsePageExists(html)) {
+        return result;
+    }
+
+    result.exists = true;
+    
+    // Exact same regex parsing as server.js
+    const rowRegex = /<tr>\s*<td>\d+<\/td>\s*<td>([\s\S]*?)<\/td>\s*<\/tr>/gi;
+    const coauthorSet = new Set();
+    const normalizedCurrentAuthor = currentAuthorName.toLowerCase().trim();
+    let rowMatch;
+    let pubCount = 0;
+
+    while ((rowMatch = rowRegex.exec(html)) !== null) {
+        pubCount++;
+        const pubHtml = rowMatch[1].trim();
+        const authorsInRow = [];
+        let authorMatch;
+        const freshAuthorRegex = /<author[^>]*>([^<]+)<\/author>/gi;
+        
+        while ((authorMatch = freshAuthorRegex.exec(pubHtml)) !== null) {
+            const rawName = authorMatch[1].trim();
+            const normName = clientNormalizeName(rawName);
+            authorsInRow.push(normName);
+            
+            if (normName.toLowerCase().trim() !== normalizedCurrentAuthor) {
+                coauthorSet.add(normName);
+            }
+        }
+
+        let detailsText = pubHtml.replace(/<author[^>]*>[^<]+<\/author>/gi, '');
+        detailsText = detailsText.replace(/^[\s;.,]+/g, '').trim();
+        
+        result.publications.push({
+            id: pubCount,
+            authors: authorsInRow,
+            details: detailsText
+        });
+    }
+
+    result.coauthors = Array.from(coauthorSet);
+    return result;
+}
+
+const clientHtmlCache = {};
+
+async function clientFetchHtml(authorName) {
+    if (clientHtmlCache[authorName]) {
+        return clientHtmlCache[authorName];
+    }
+    
+    // Use api.allorigins.win as a free, reliable, CORS-transparent proxy
+    const targetUrl = `https://elaba.mb.vu.lt/fsf/?aut=${encodeURIComponent(authorName)}`;
+    const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`;
+    
+    const response = await fetch(proxyUrl);
+    if (!response.ok) {
+        throw new Error(`Public CORS proxy returned error: ${response.status}`);
+    }
+    const data = await response.json();
+    const html = data.contents || '';
+    
+    clientHtmlCache[authorName] = html;
+    return html;
+}
+
+async function clientLimitConcurrency(tasks, limit) {
+    const results = [];
+    const executing = [];
+    for (const task of tasks) {
+        const p = Promise.resolve().then(() => task());
+        results.push(p);
+        if (limit <= tasks.length) {
+            const e = p.then(() => executing.splice(executing.indexOf(e), 1));
+            executing.push(e);
+            if (executing.length >= limit) {
+                await Promise.race(executing);
+            }
+        }
+    }
+    return Promise.all(results);
+}
+
